@@ -1,4 +1,3 @@
-<?php
 /****
 Bản Quyền					:		🅢-🅣🅞🅞🅛
 Loại Code.					:		Tool Traodoisub.com Kháng 95% Block Tính Năng
@@ -226,4 +225,3 @@ echo $thanh_xau."\033[1;33mBản Quyền:\033[1;34m S-TOOl\n"; usleep(2000);
 echo $thanh_xau."\033[1;32mAdmin:\033[1;36m Sói Con\n"; usleep(2000);
 echo $thanh_xau."\033[1;31mDonate MoMo: \033[1;34m0765826980\n"; usleep(2000);
 chay(35);}
-?>
