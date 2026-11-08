@@ -162,7 +162,16 @@ def esc(text):
     return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "’")
 
 
+ZOOM = 1.0   # phóng to khung hình gốc (1.25 = +25%, cắt bớt hai bên)
+
+
 def frame_filter(W, H, vertical):
+    if vertical and ZOOM > 1.0:
+        zw = int(W * ZOOM) // 2 * 2
+        return (f"split[bg][fg];"
+                f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                f"boxblur=20:2,eq=brightness=-0.15[bg2];"
+                f"[fg]scale={zw}:-2,crop={W}:ih[fg2];[bg2][fg2]overlay=(W-w)/2:(H-h)/2")
     if vertical:
         # nền mờ + video gốc ở giữa (kiểu TikTok/Shorts)
         return (f"split[bg][fg];"
@@ -406,12 +415,15 @@ def main():
     ap.add_argument("--music", help="file nhạc nền (mp3/m4a...)")
     ap.add_argument("--music-vol", type=float, default=0.35)
     ap.add_argument("--fps", type=int, default=60)
+    ap.add_argument("--zoom", type=float, default=1.0, help="phóng to khung hình (1.25 = +25%%)")
     ap.add_argument("--analyze", action="store_true", help="chỉ in các đoạn phát hiện, không dựng")
     ap.add_argument("--segments", help='tự chọn đoạn, vd "00:12-00:20,01:05-01:15"')
     ap.add_argument("--story", help='chế độ kể chuyện: giữ liền mạch đoạn "mm:ss-mm:ss", '
                     'tua nhanh đoạn nhàn để vừa --length')
     ap.add_argument("--caption", help='chữ cố định suốt video, dùng | để xuống dòng')
     a = ap.parse_args()
+    global ZOOM
+    ZOOM = a.zoom
 
     if a.story:
         W, H = (1080, 1920) if a.vertical else (1920, 1080)
