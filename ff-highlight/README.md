@@ -30,3 +30,11 @@ python3 ff-highlight/ffhl.py quay_man_hinh.mp4 --segments "01:12-01:20,03:05-03:
 Tuỳ chọn khác: `--pre`, `--post`, `--gap`, `--no-slowmo`, `--music-vol`, `--fps`.
 
 Mẹo: bật âm thanh game khi quay màn hình — phát hiện pha bắn chính xác hơn nhiều so với chỉ dùng hình.
+
+## Chế độ kể chuyện (`--story`)
+Giữ liền mạch một đoạn (ví dụ từ lúc đồng đội hồi sinh tới hết pha highlight). Đoạn giao tranh giữ tốc độ thường và có slow-mo, đoạn đi lại/loot tự tua nhanh (hiện ">> x2.5") để vừa `--length`.
+
+```bash
+python3 ff-highlight/ffhl.py tran.mp4 --story 03:20-05:45 --length 60 --vertical \
+    --title "" --caption "Khi đồng đội hồi sinh|một con hổ"
+```

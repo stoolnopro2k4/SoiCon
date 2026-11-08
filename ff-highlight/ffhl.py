@@ -206,7 +206,7 @@ def render_clip(src, a, b, peak, out, W, H, fps, vertical, slowmo, has_audio):
         "-of", "default=nw=1:nk=1", out]))
 
 
-def assemble(clips, durs, out, W, H, title, music, trans, music_vol):
+def assemble(clips, durs, out, W, H, title, music, trans, music_vol, caption=None):
     T = trans
     args = ["ffmpeg", "-v", "error", "-y"]
     for c in clips:
@@ -217,6 +217,10 @@ def assemble(clips, durs, out, W, H, title, music, trans, music_vol):
     if n == 1:
         fc.append("[0:v]null[vx];[0:a]anull[ax]")
         total = durs[0]
+    elif T <= 0:
+        fc.append("".join(f"[{i}:v][{i}:a]" for i in range(n)) +
+                  f"concat=n={n}:v=1:a=1[vx][ax]")
+        total = sum(durs)
     else:
         prev_v, prev_a = "[0:v]", "[0:a]"
         acc = durs[0]
@@ -238,6 +242,13 @@ def assemble(clips, durs, out, W, H, title, music, trans, music_vol):
                    f"fontcolor=white:borderw=6:bordercolor=black:"
                    f"x=(w-text_w)/2:y=h*0.12:enable='between(t,0.3,3.0)':"
                    f"alpha='if(lt(t,0.6),(t-0.3)/0.3,if(gt(t,2.6),(3.0-t)/0.4,1))'")
+    if caption and f:
+        cs = int(W * 0.055)
+        lines = caption.split("|")
+        for li, line in enumerate(lines):
+            vchain += (f",drawtext=fontfile={f}:text='{esc(line)}':fontsize={cs}:"
+                       f"fontcolor=white:borderw=5:bordercolor=black:box=0:"
+                       f"x=(w-text_w)/2:y=h*0.06+{li}*{int(cs * 1.25)}")
     fc.append(vchain + "[vout]")
     if music:
         args += ["-stream_loop", "-1", "-i", music]
@@ -258,6 +269,117 @@ def assemble(clips, durs, out, W, H, title, music, trans, music_vol):
     return total
 
 
+# ---------------------------------------------------------------- chế độ kể chuyện
+def atempo_chain(sp):
+    parts = []
+    while sp > 2.0:
+        parts.append("atempo=2.0"); sp /= 2.0
+    while sp < 0.5:
+        parts.append("atempo=0.5"); sp /= 0.5
+    parts.append(f"atempo={sp:.4f}")
+    return ",".join(parts)
+
+
+def story_plan(src, t0, t1, target):
+    """Giữ liền mạch đoạn [t0,t1]; đoạn giao tranh tốc độ thường, đoạn nhàn tua nhanh."""
+    dur, has_audio, _, _ = probe(src)
+    t1 = min(t1, dur)
+    n = int(dur / HOP)
+    mot = motion_score(src, n)
+    sc = (smooth(audio_score(src, n), 2.0) * 0.7 + smooth(mot, 1.0) * 0.3) if has_audio \
+        else smooth(mot, 1.0)
+    sc = smooth(sc, 1.0)
+    i0, i1 = int(t0 / HOP), int(t1 / HOP)
+    rs = sc[i0:i1]
+    thr = max(0.1, np.percentile(rs, 60), rs.max() * 0.45)
+    act = rs > thr
+    # nới vùng giao tranh ra 2s trước / 1s sau cho đủ bối cảnh
+    k_pre, k_post = int(2.0 / HOP), int(1.0 / HOP)
+    idx = np.where(act)[0]
+    grown = np.zeros_like(act)
+    for i in idx:
+        grown[max(0, i - k_pre):i + k_post] = True
+    # gom thành các khối liên tiếp
+    runs, start = [], 0
+    for i in range(1, len(grown) + 1):
+        if i == len(grown) or grown[i] != grown[start]:
+            runs.append([t0 + start * HOP, t0 + i * HOP, bool(grown[start])])
+            start = i
+    # bỏ khối quá ngắn (<1.5s) bằng cách gộp vào khối trước
+    clean = []
+    for r in runs:
+        if clean and (r[1] - r[0] < 1.5 or clean[-1][1] - clean[-1][0] < 1.5):
+            clean[-1][1] = r[1]
+            clean[-1][2] = clean[-1][2] or r[2]
+        else:
+            clean.append(r)
+    A = sum(b - a for a, b, x in clean if x)
+    C = sum(b - a for a, b, x in clean if not x)
+    target = target - 0.5 * sum(1 for r in clean if r[2])   # chừa chỗ cho slow-mo
+    if A + C <= target:
+        calm_sp, act_sp = 1.0, 1.0
+    elif A < target * 0.8:
+        calm_sp, act_sp = min(4.0, C / max(0.1, target - A)), 1.0
+        if A + C / calm_sp > target:          # tua tối đa vẫn dài -> tua nhẹ cả giao tranh
+            act_sp = A / max(0.1, target - C / calm_sp)
+    else:
+        calm_sp = 4.0
+        act_sp = (A) / max(0.1, target - C / calm_sp)
+    act_sp = max(1.0, act_sp)
+    # đỉnh của mỗi khối giao tranh (để slow-mo)
+    plan = []
+    for a, b, x in clean:
+        sp = act_sp if x else calm_sp
+        j0, j1 = int(a / HOP), max(int(a / HOP) + 1, int(b / HOP))
+        pk = (j0 + int(np.argmax(sc[j0:j1]))) * HOP
+        plan.append((a, b, sp, x, pk))
+    print(f"Đoạn {fmt(t0)}–{fmt(t1)}: giao tranh {A:.0f}s, nhàn {C:.0f}s "
+          f"→ tua giao tranh x{act_sp:.2f}, đoạn nhàn x{calm_sp:.2f}")
+    for a, b, sp, x, pk in plan:
+        print(f"  {fmt(a)}–{fmt(b)}  {'GIAO TRANH' if x else 'tua      '} x{sp:.2f}")
+    return plan, has_audio
+
+
+def render_story_piece(src, a, b, sp, action, peak, out, W, H, fps, vertical,
+                       has_audio, slowmo):
+    d = b - a
+    vf_base = frame_filter(W, H, vertical)
+    inputs = ["-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", src]
+    if not has_audio:
+        inputs += ["-f", "lavfi", "-t", f"{d:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
+    ain = "0:a" if has_audio else "1:a"
+    label = ""
+    f = font()
+    if sp > 1.05 and f:
+        fs = int(W * 0.045)
+        label = (f",drawtext=fontfile={f}:text='▶▶ x{sp:.1f}':fontsize={fs}:fontcolor=white:"
+                 f"borderw=4:bordercolor=black:x=w-text_w-40:y=h-text_h-60")
+        if "▶" in label:
+            label = label.replace("▶▶ ", ">> ")
+    aformat = "aresample=48000,aformat=channel_layouts=stereo"
+    if action and slowmo and d > 3 and sp <= 1.05:
+        pk = min(max(peak - a, 0.6), d - 0.6)
+        s0, s1 = pk - 0.5, pk + 0.5
+        fc = (f"[0:v]fps={fps},{vf_base},split=3[v0][v1][v2];"
+              f"[v0]trim=0:{s0:.3f},setpts=PTS-STARTPTS[va];"
+              f"[v1]trim={s0:.3f}:{s1:.3f},setpts=2*(PTS-STARTPTS),eq=saturation=1.3:contrast=1.08[vb];"
+              f"[v2]trim={s1:.3f},setpts=PTS-STARTPTS[vc];"
+              f"[{ain}]{aformat},asplit=3[a0][a1][a2];"
+              f"[a0]atrim=0:{s0:.3f},asetpts=PTS-STARTPTS[aa];"
+              f"[a1]atrim={s0:.3f}:{s1:.3f},asetpts=PTS-STARTPTS,atempo=0.5[ab];"
+              f"[a2]atrim={s1:.3f},asetpts=PTS-STARTPTS[ac];"
+              f"[va][aa][vb][ab][vc][ac]concat=n=3:v=1:a=1[v][a]")
+    else:
+        fc = (f"[0:v]setpts=PTS/{sp:.4f},fps={fps},{vf_base}{label}[v];"
+              f"[{ain}]{aformat},{atempo_chain(sp)}[a]")
+    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", fc,
+         "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
+         "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", out])
+    return float(subprocess.check_output([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=nw=1:nk=1", out]))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Tự động dựng highlight Free Fire")
     ap.add_argument("inputs", nargs="+", help="video quay màn hình (1 hoặc nhiều file)")
@@ -274,7 +396,33 @@ def main():
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--analyze", action="store_true", help="chỉ in các đoạn phát hiện, không dựng")
     ap.add_argument("--segments", help='tự chọn đoạn, vd "00:12-00:20,01:05-01:15"')
+    ap.add_argument("--story", help='chế độ kể chuyện: giữ liền mạch đoạn "mm:ss-mm:ss", '
+                    'tua nhanh đoạn nhàn để vừa --length')
+    ap.add_argument("--caption", help='chữ cố định suốt video, dùng | để xuống dòng')
     a = ap.parse_args()
+
+    if a.story:
+        W, H = (1080, 1920) if a.vertical else (1920, 1080)
+        src = a.inputs[0]
+        t0, t1 = (parse_t(x) for x in a.story.split("-"))
+        plan, has_audio = story_plan(src, t0, t1, a.length)
+        if a.analyze:
+            return
+        tmp = tempfile.mkdtemp(prefix="ffhl_")
+        try:
+            clips, durs = [], []
+            for k, (s0, s1, sp, x, pk) in enumerate(plan):
+                out = os.path.join(tmp, f"s{k:03d}.mp4")
+                print(f"Dựng khối {k + 1}/{len(plan)}")
+                durs.append(render_story_piece(src, s0, s1, sp, x, pk, out, W, H, a.fps,
+                                               a.vertical, has_audio, not a.no_slowmo))
+                clips.append(out)
+            total = assemble(clips, durs, a.output, W, H, a.title, a.music, 0,
+                             a.music_vol, a.caption)
+            print(f"\nXong! {a.output} ({total:.1f}s, {W}x{H})")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return
 
     W, H = (1080, 1920) if a.vertical else (1920, 1080)
     plan = []  # (src, start, end, peak, has_audio)
