@@ -341,33 +341,45 @@ def story_plan(src, t0, t1, target):
 
 
 def render_story_piece(src, a, b, sp, action, peak, out, W, H, fps, vertical,
-                       has_audio, slowmo):
+                       has_audio, slowmo, text=None):
     d = b - a
     vf_base = frame_filter(W, H, vertical)
+    if text and font():
+        ts = int(W * 0.07)
+        if len(text) > 14:
+            ts = int(W * 1.6 / len(text))
+        en = ""
+        if action:
+            pk = min(max(peak - a, 0.6), d - 0.6)
+            t_out = (pk - 0.5) / sp            # thời điểm bắt đầu slow-mo trong đoạn ra
+            en = f":enable='between(t,{t_out:.2f},{t_out + 2.8:.2f})'"
+        vf_base += (f",drawtext=fontfile={font()}:text='{esc(text)}':fontsize={ts}:"
+                    f"fontcolor=yellow:borderw=6:bordercolor=black:"
+                    f"x=(w-text_w)/2:y=h*0.72{en}")
     inputs = ["-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", src]
     if not has_audio:
         inputs += ["-f", "lavfi", "-t", f"{d:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
     ain = "0:a" if has_audio else "1:a"
     label = ""
     f = font()
-    if sp > 1.05 and f:
+    if sp > 1.05 and f and not action:
         fs = int(W * 0.045)
         label = (f",drawtext=fontfile={f}:text='▶▶ x{sp:.1f}':fontsize={fs}:fontcolor=white:"
                  f"borderw=4:bordercolor=black:x=w-text_w-40:y=h-text_h-60")
         if "▶" in label:
             label = label.replace("▶▶ ", ">> ")
     aformat = "aresample=48000,aformat=channel_layouts=stereo"
-    if action and slowmo and d > 3 and sp <= 1.05:
+    if action and slowmo and d > 3:
         pk = min(max(peak - a, 0.6), d - 0.6)
         s0, s1 = pk - 0.5, pk + 0.5
         fc = (f"[0:v]fps={fps},{vf_base},split=3[v0][v1][v2];"
-              f"[v0]trim=0:{s0:.3f},setpts=PTS-STARTPTS[va];"
+              f"[v0]trim=0:{s0:.3f},setpts=(PTS-STARTPTS)/{sp:.4f}[va];"
               f"[v1]trim={s0:.3f}:{s1:.3f},setpts=2*(PTS-STARTPTS),eq=saturation=1.3:contrast=1.08[vb];"
-              f"[v2]trim={s1:.3f},setpts=PTS-STARTPTS[vc];"
+              f"[v2]trim={s1:.3f},setpts=(PTS-STARTPTS)/{sp:.4f}[vc];"
               f"[{ain}]{aformat},asplit=3[a0][a1][a2];"
-              f"[a0]atrim=0:{s0:.3f},asetpts=PTS-STARTPTS[aa];"
+              f"[a0]atrim=0:{s0:.3f},asetpts=PTS-STARTPTS,{atempo_chain(sp)}[aa];"
               f"[a1]atrim={s0:.3f}:{s1:.3f},asetpts=PTS-STARTPTS,atempo=0.5[ab];"
-              f"[a2]atrim={s1:.3f},asetpts=PTS-STARTPTS[ac];"
+              f"[a2]atrim={s1:.3f},asetpts=PTS-STARTPTS,{atempo_chain(sp)}[ac];"
               f"[va][aa][vb][ab][vc][ac]concat=n=3:v=1:a=1[v][a]")
     else:
         fc = (f"[0:v]setpts=PTS/{sp:.4f},fps={fps},{vf_base}{label}[v];"
